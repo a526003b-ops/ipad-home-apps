@@ -34,6 +34,7 @@
     .entry p { margin:0; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .meta { color:var(--mute); font-size:.85rem; }
     .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#3a3228; padding:10px 14px; border-radius:999px; font-size:.9rem; display:none; }
+    .empty { color:var(--mute); padding:8px 2px; }
   </style>
 </head>
 <body>
@@ -41,6 +42,7 @@
     <h1>Diary</h1>
     <button id="exportBtn">Export</button>
     <label class="file">Import<input id="importFile" type="file" accept="application/json" hidden></label>
+    <button id="clearBtn">Clear all</button>
   </header>
   <main>
     <section class="card">
@@ -49,7 +51,7 @@
         <span class="meta" id="persistNote"></span>
       </div>
       <div class="moods" id="moods"></div>
-      <textarea id="body" placeholder="What happened. What you noticed. Nothing fancy required."></textarea>
+      <textarea id="body" placeholder="Write here"></textarea>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="saveBtn">Save entry</button>
         <button id="newBtn">New</button>
@@ -66,6 +68,7 @@
   <div class="toast" id="toast"></div>
   <script>
     const MOODS = ["Calm","Tired","Good","Heavy","Grateful","Angry","Anxious","Clear"];
+    const DEMO_HINTS = [/welcome to your diary/i, /sample entry/i, /demo/i, /this is an example/i, /lorem ipsum/i];
     const dbp = new Promise((res, rej) => {
       const r = indexedDB.open("diary-local", 1);
       r.onupgradeneeded = () => r.result.createObjectStore("entries", { keyPath: "id" });
@@ -88,47 +91,93 @@
         t.onerror = () => rej(t.error);
       });
     };
+    const del = async (id) => {
+      const db = await dbp;
+      return new Promise((res, rej) => {
+        const t = db.transaction("entries", "readwrite");
+        t.objectStore("entries").delete(id);
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error);
+      });
+    };
+    const clearAll = async () => {
+      const db = await dbp;
+      return new Promise((res, rej) => {
+        const t = db.transaction("entries", "readwrite");
+        t.objectStore("entries").clear();
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error);
+      });
+    };
     const today = () => new Date().toISOString().slice(0,10);
-    let mood = "Calm";
+    let mood = "";
     const moodsEl = document.getElementById("moods");
     MOODS.forEach((m) => {
       const b = document.createElement("button");
       b.textContent = m;
       b.onclick = () => { mood = m; [...moodsEl.children].forEach(x => x.classList.toggle("on", x.textContent===m)); };
-      if (m === mood) b.classList.add("on");
       moodsEl.appendChild(b);
     });
     const dateEl = document.getElementById("date");
     const bodyEl = document.getElementById("body");
     dateEl.value = today();
     function toast(t){ const el=document.getElementById("toast"); el.textContent=t; el.style.display="block"; setTimeout(()=>el.style.display="none",1800); }
+    function isDemo(r){
+      if (!r) return false;
+      if (r.demo === true || r.sample === true) return true;
+      const text = (r.body || "") + " " + (r.title || "");
+      return DEMO_HINTS.some((re) => re.test(text));
+    }
+    async function purgeDemo(){
+      const rows = await all();
+      for (const r of rows) if (isDemo(r) || !(r.body || "").trim()) await del(r.id);
+    }
     async function loadDate(d){
       const rows = await all();
       const hit = rows.find(x => x.id === d);
       dateEl.value = d;
       bodyEl.value = hit ? hit.body : "";
-      mood = hit ? hit.mood : "Calm";
+      mood = hit ? (hit.mood || "") : "";
       [...moodsEl.children].forEach(x => x.classList.toggle("on", x.textContent===mood));
     }
     async function render(){
       const q = document.getElementById("q").value.toLowerCase();
-      const rows = (await all()).sort((a,b)=> b.id.localeCompare(a.id));
+      const rows = (await all()).filter(r => (r.body || "").trim()).sort((a,b)=> b.id.localeCompare(a.id));
       const list = document.getElementById("list");
       list.innerHTML = "";
-      rows.filter(r => !q || (r.body+" "+r.mood+" "+r.id).toLowerCase().includes(q)).forEach(r => {
+      const shown = rows.filter(r => !q || (r.body+" "+(r.mood||"")+" "+r.id).toLowerCase().includes(q));
+      if (!shown.length) {
+        list.innerHTML = "<p class=\"empty\">No entries yet.</p>";
+        return;
+      }
+      shown.forEach(r => {
         const d = document.createElement("div");
         d.className = "card entry";
-        d.innerHTML = `<h3>${r.id} · ${r.mood}</h3><p>${(r.body||"").replace(/</g,"")}</p>`;
+        d.innerHTML = `<h3>${r.id}${r.mood ? " · " + r.mood : ""}</h3><p>${(r.body||"").replace(/</g,"")}</p>`;
         d.onclick = () => loadDate(r.id);
         list.appendChild(d);
       });
     }
     document.getElementById("saveBtn").onclick = async () => {
+      const text = bodyEl.value.trim();
+      if (!text) { toast("Nothing to save"); return; }
       await put({ id: dateEl.value, mood, body: bodyEl.value, updated: Date.now() });
       await render();
       toast("Saved on this iPad");
     };
-    document.getElementById("newBtn").onclick = () => { dateEl.value = today(); bodyEl.value=""; };
+    document.getElementById("newBtn").onclick = () => {
+      dateEl.value = today();
+      bodyEl.value = "";
+      mood = "";
+      [...moodsEl.children].forEach(x => x.classList.remove("on"));
+    };
+    document.getElementById("clearBtn").onclick = async () => {
+      if (!confirm("Delete every entry on this iPad?")) return;
+      await clearAll();
+      bodyEl.value = "";
+      await render();
+      toast("All entries removed");
+    };
     dateEl.onchange = () => loadDate(dateEl.value);
     document.getElementById("q").oninput = render;
     document.getElementById("exportBtn").onclick = async () => {
@@ -141,7 +190,7 @@
     document.getElementById("importFile").onchange = async (e) => {
       const file = e.target.files[0]; if (!file) return;
       const rows = JSON.parse(await file.text());
-      for (const r of rows) if (r.id) await put(r);
+      for (const r of rows) if (r.id && !isDemo(r) && (r.body || "").trim()) await put(r);
       await render(); toast("Imported");
     };
     if (navigator.storage && navigator.storage.persist) {
@@ -150,7 +199,7 @@
       });
     }
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
-    loadDate(today()).then(render);
+    purgeDemo().then(() => loadDate(today())).then(render);
   </script>
 </body>
 </html>
