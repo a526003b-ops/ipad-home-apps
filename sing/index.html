@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sing">
+  <meta name="theme-color" content="#0d1020">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <title>Sing</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:#0d1020; color:#eef1ff; min-height:100dvh; }
+    header { padding: calc(12px + env(safe-area-inset-top)) 16px 12px; display:flex; align-items:center; gap:10px; border-bottom:1px solid #243; }
+    h1 { font-size:1.15rem; margin:0; flex:1; }
+    button { background:#1c2344; color:#eef1ff; border:1px solid #334; border-radius:12px; padding:10px 14px; font:inherit; }
+    button.primary { background:#7c5cbf; border:0; font-weight:600; }
+    main { max-width:900px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+    .card { background:#161b33; border:1px solid #273056; border-radius:18px; padding:16px; }
+    .songs { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; }
+    .songs button { text-align:left; padding:14px; }
+    .songs button.on { outline:2px solid #c9b6ff; }
+    .pitch { font-size:3.2rem; font-weight:700; letter-spacing:.04em; }
+    .cents { color:#9aa3c7; }
+    .bar { height:16px; background:#0b0e1c; border-radius:99px; overflow:hidden; }
+    .bar > span { display:block; height:100%; width:0; background:linear-gradient(90deg,#6ee7c5,#ffd36b); }
+    .lyric { font-size:1.6rem; min-height:2.2em; }
+    .score { font-size:1.3rem; }
+    .meta { color:#9aa3c7; font-size:.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sing</h1>
+    <button id="micBtn" class="primary">Enable mic</button>
+  </header>
+  <main>
+    <section class="card">
+      <p class="meta">Match the target note. Scores stay on this iPad.</p>
+      <div class="songs" id="songs"></div>
+    </section>
+    <section class="card">
+      <div class="lyric" id="lyric">Pick a song, then enable the mic.</div>
+      <div class="meta" id="target">Target: —</div>
+      <div class="pitch" id="heard">—</div>
+      <div class="cents" id="cents"> </div>
+      <div class="bar"><span id="fill"></span></div>
+      <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap">
+        <button id="playBtn">Play target</button>
+        <button id="startBtn">Start phrase</button>
+        <span class="score" id="score">Score 0</span>
+      </div>
+      <p class="meta" id="best"></p>
+    </section>
+  </main>
+  <script>
+    const NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    const freqToMidi = (f) => 69 + 12 * Math.log2(f / 440);
+    const midiName = (m) => NAMES[((Math.round(m)%12)+12)%12] + Math.floor(Math.round(m)/12 - 1);
+    const midiFreq = (m) => 440 * Math.pow(2, (m-69)/12);
+    const SONGS = [
+      { id:"joy", title:"Ode to Joy", notes:[64,64,65,67,67,65,64,62,60,60,62,64,64,62,62], words:"Joyful joyful we adore thee" },
+      { id:"twinkle", title:"Twinkle", notes:[60,60,67,67,69,69,67,65,65,64,64,62,62,60], words:"Twinkle twinkle little star" },
+      { id:"grace", title:"Amazing Grace", notes:[62,67,69,67,69,71,67,62,64], words:"Amazing grace how sweet the sound" },
+      { id:"scale", title:"Simple Scale", notes:[60,62,64,65,67,69,71,72], words:"Do re mi fa so la ti do" }
+    ];
+    const dbp = new Promise((res,rej) => {
+      const r = indexedDB.open("sing-local", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("scores", { keyPath:"id" });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    async function bestOf(id){
+      const db = await dbp;
+      return new Promise((res) => {
+        const q = db.transaction("scores").objectStore("scores").get(id);
+        q.onsuccess = () => res(q.result && q.result.best || 0);
+      });
+    }
+    async function saveBest(id, score){
+      const prev = await bestOf(id);
+      const best = Math.max(prev, score);
+      const db = await dbp;
+      db.transaction("scores","readwrite").objectStore("scores").put({ id, best });
+      return best;
+    }
+    let song = SONGS[0], idx = 0, running = false, score = 0, hits = 0, total = 0;
+    const songsEl = document.getElementById("songs");
+    SONGS.forEach((s) => {
+      const b = document.createElement("button");
+      b.textContent = s.title;
+      if (s === song) b.classList.add("on");
+      b.onclick = async () => {
+        song = s; idx = 0; score = 0; hits = 0; total = 0;
+        [...songsEl.children].forEach(x => x.classList.toggle("on", x===b));
+        document.getElementById("lyric").textContent = s.words;
+        document.getElementById("best").textContent = "Best: " + (await bestOf(s.id));
+        showTarget();
+      };
+      songsEl.appendChild(b);
+    });
+    function showTarget(){
+      document.getElementById("target").textContent = "Target: " + midiName(song.notes[idx]);
+    }
+    let actx, analyser, buf;
+    document.getElementById("micBtn").onclick = async () => {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") await actx.resume();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation:false, noiseSuppression:false } });
+      const src = actx.createMediaStreamSource(stream);
+      analyser = actx.createAnalyser();
+      analyser.fftSize = 2048;
+      src.connect(analyser);
+      buf = new Float32Array(analyser.fftSize);
+      document.getElementById("micBtn").textContent = "Mic on";
+      loop();
+    };
+    function detectPitch(buf, sr){
+      let rms = 0;
+      for (let i=0;i<buf.length;i++) rms += buf[i]*buf[i];
+      rms = Math.sqrt(rms / buf.length);
+      if (rms < 0.01) return null;
+      const SIZE = buf.length;
+      const MAX_LAG = Math.floor(sr / 70);
+      const MIN_LAG = Math.floor(sr / 1000);
+      let best = -1, bestCorr = 0;
+      for (let lag=MIN_LAG; lag<=MAX_LAG; lag++){
+        let corr = 0;
+        for (let i=0;i<SIZE-lag;i++) corr += buf[i]*buf[i+lag];
+        if (corr > bestCorr){ bestCorr = corr; best = lag; }
+      }
+      if (best < 0) return null;
+      return sr / best;
+    }
+    function loop(){
+      requestAnimationFrame(loop);
+      if (!analyser) return;
+      analyser.getFloatTimeDomainData(buf);
+      const f = detectPitch(buf, actx.sampleRate);
+      if (!f) { document.getElementById("heard").textContent = "—"; return; }
+      const midi = freqToMidi(f);
+      document.getElementById("heard").textContent = midiName(midi);
+      const cents = (midi - song.notes[idx]) * 100;
+      document.getElementById("cents").textContent = (cents>=0?"+":"") + cents.toFixed(0) + " cents";
+      const acc = Math.max(0, 1 - Math.abs(cents)/50);
+      document.getElementById("fill").style.width = (acc*100) + "%";
+      if (running) {
+        total++;
+        if (Math.abs(cents) < 40) hits++;
+        score = Math.round(100 * hits / Math.max(1,total));
+        document.getElementById("score").textContent = "Score " + score;
+      }
+    }
+    document.getElementById("playBtn").onclick = async () => {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") await actx.resume();
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.frequency.value = midiFreq(song.notes[idx]);
+      o.type = "sine";
+      g.gain.value = 0.12;
+      o.connect(g).connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + 0.6);
+    };
+    document.getElementById("startBtn").onclick = async () => {
+      running = true; idx = 0; score = 0; hits = 0; total = 0;
+      document.getElementById("lyric").textContent = song.words;
+      showTarget();
+      const step = () => {
+        idx = (idx + 1) % song.notes.length;
+        showTarget();
+        if (idx === 0) {
+          running = false;
+          saveBest(song.id, score).then((b) => { document.getElementById("best").textContent = "Best: " + b; });
+        } else setTimeout(step, 1400);
+      };
+      setTimeout(step, 1400);
+    };
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+    bestOf(song.id).then((b) => document.getElementById("best").textContent = "Best: " + b);
+    showTarget();
+  </script>
+</body>
+</html>
