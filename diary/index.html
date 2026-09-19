@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Diary">
+  <meta name="theme-color" content="#1a1612">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <title>Diary</title>
+  <style>
+    :root { color-scheme: dark; --bg:#1a1612; --paper:#241e18; --ink:#f3eadc; --mute:#9a8d7a; --line:#3a3228; --accent:#c4a574; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,system-ui,Georgia,serif; min-height:100dvh; }
+    header { position:sticky; top:0; z-index:2; background:rgba(26,22,18,.92); backdrop-filter:blur(12px);
+      padding: calc(12px + env(safe-area-inset-top)) 16px 12px; display:flex; gap:10px; align-items:center; border-bottom:1px solid var(--line); }
+    header h1 { font-size:1.15rem; margin:0; font-weight:600; flex:1; }
+    button, .file { background:#2e271f; color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:8px 12px; font:inherit; }
+    button.primary { background:var(--accent); color:#1a1612; border:0; font-weight:600; }
+    main { max-width:820px; margin:0 auto; padding:16px 16px 80px; display:grid; gap:16px; }
+    .card { background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:16px; }
+    textarea { width:100%; min-height:180px; background:#1c1814; color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:12px; font:inherit; font-size:1.05rem; line-height:1.5; }
+    input[type=date], input[type=search] { background:#1c1814; color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:8px 10px; font:inherit; }
+    .moods { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+    .moods button { padding:6px 10px; }
+    .moods button.on { background:var(--accent); color:#1a1612; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .list { display:grid; gap:10px; }
+    .entry { cursor:pointer; }
+    .entry h3 { margin:0 0 6px; font-size:1rem; }
+    .entry p { margin:0; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .meta { color:var(--mute); font-size:.85rem; }
+    .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#3a3228; padding:10px 14px; border-radius:999px; font-size:.9rem; display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Diary</h1>
+    <button id="exportBtn">Export</button>
+    <label class="file">Import<input id="importFile" type="file" accept="application/json" hidden></label>
+  </header>
+  <main>
+    <section class="card">
+      <div class="row">
+        <input id="date" type="date">
+        <span class="meta" id="persistNote"></span>
+      </div>
+      <div class="moods" id="moods"></div>
+      <textarea id="body" placeholder="What happened. What you noticed. Nothing fancy required."></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="saveBtn">Save entry</button>
+        <button id="newBtn">New</button>
+        <span class="meta" id="saveState">Saved on this iPad only.</span>
+      </div>
+    </section>
+    <section>
+      <div class="row" style="margin-bottom:10px">
+        <input id="q" type="search" placeholder="Search entries" style="flex:1">
+      </div>
+      <div class="list" id="list"></div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script>
+    const MOODS = ["Calm","Tired","Good","Heavy","Grateful","Angry","Anxious","Clear"];
+    const dbp = new Promise((res, rej) => {
+      const r = indexedDB.open("diary-local", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("entries", { keyPath: "id" });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const all = async () => {
+      const db = await dbp;
+      return new Promise((res) => {
+        const r = db.transaction("entries").objectStore("entries").getAll();
+        r.onsuccess = () => res(r.result || []);
+      });
+    };
+    const put = async (entry) => {
+      const db = await dbp;
+      return new Promise((res, rej) => {
+        const t = db.transaction("entries", "readwrite");
+        t.objectStore("entries").put(entry);
+        t.oncomplete = () => res();
+        t.onerror = () => rej(t.error);
+      });
+    };
+    const today = () => new Date().toISOString().slice(0,10);
+    let mood = "Calm";
+    const moodsEl = document.getElementById("moods");
+    MOODS.forEach((m) => {
+      const b = document.createElement("button");
+      b.textContent = m;
+      b.onclick = () => { mood = m; [...moodsEl.children].forEach(x => x.classList.toggle("on", x.textContent===m)); };
+      if (m === mood) b.classList.add("on");
+      moodsEl.appendChild(b);
+    });
+    const dateEl = document.getElementById("date");
+    const bodyEl = document.getElementById("body");
+    dateEl.value = today();
+    function toast(t){ const el=document.getElementById("toast"); el.textContent=t; el.style.display="block"; setTimeout(()=>el.style.display="none",1800); }
+    async function loadDate(d){
+      const rows = await all();
+      const hit = rows.find(x => x.id === d);
+      dateEl.value = d;
+      bodyEl.value = hit ? hit.body : "";
+      mood = hit ? hit.mood : "Calm";
+      [...moodsEl.children].forEach(x => x.classList.toggle("on", x.textContent===mood));
+    }
+    async function render(){
+      const q = document.getElementById("q").value.toLowerCase();
+      const rows = (await all()).sort((a,b)=> b.id.localeCompare(a.id));
+      const list = document.getElementById("list");
+      list.innerHTML = "";
+      rows.filter(r => !q || (r.body+" "+r.mood+" "+r.id).toLowerCase().includes(q)).forEach(r => {
+        const d = document.createElement("div");
+        d.className = "card entry";
+        d.innerHTML = `<h3>${r.id} · ${r.mood}</h3><p>${(r.body||"").replace(/</g,"")}</p>`;
+        d.onclick = () => loadDate(r.id);
+        list.appendChild(d);
+      });
+    }
+    document.getElementById("saveBtn").onclick = async () => {
+      await put({ id: dateEl.value, mood, body: bodyEl.value, updated: Date.now() });
+      await render();
+      toast("Saved on this iPad");
+    };
+    document.getElementById("newBtn").onclick = () => { dateEl.value = today(); bodyEl.value=""; };
+    dateEl.onchange = () => loadDate(dateEl.value);
+    document.getElementById("q").oninput = render;
+    document.getElementById("exportBtn").onclick = async () => {
+      const data = JSON.stringify(await all(), null, 2);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([data], {type:"application/json"}));
+      a.download = "diary-backup.json";
+      a.click();
+    };
+    document.getElementById("importFile").onchange = async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const rows = JSON.parse(await file.text());
+      for (const r of rows) if (r.id) await put(r);
+      await render(); toast("Imported");
+    };
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().then((ok) => {
+        document.getElementById("persistNote").textContent = ok ? "Storage locked in" : "Open this from the Home Screen icon";
+      });
+    }
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+    loadDate(today()).then(render);
+  </script>
+</body>
+</html>
