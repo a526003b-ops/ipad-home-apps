@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Wallpaper">
+  <meta name="theme-color" content="#07070c">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <title>Wallpaper</title>
+  <style>
+    html, body { margin:0; height:100%; background:#07070c; overflow:hidden; touch-action:none; }
+    canvas { display:block; width:100%; height:100%; }
+    #ui {
+      position:fixed; left:12px; right:12px; bottom: calc(16px + env(safe-area-inset-bottom));
+      display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+      background:rgba(10,10,16,.55); backdrop-filter:blur(16px);
+      border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:10px 12px;
+      color:#ddd; font: 14px -apple-system, system-ui, sans-serif;
+      opacity:1; transition:opacity .4s;
+    }
+    #ui.hide { opacity:0; pointer-events:none; }
+    button, select { background:#1b1b24; color:#eee; border:1px solid #333; border-radius:10px; padding:8px 10px; font:inherit; }
+    input[type=range] { width:120px; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <select id="theme">
+      <option value="night">Night</option>
+      <option value="ember">Ember</option>
+      <option value="sea">Sea</option>
+    </select>
+    <label>Count <input id="count" type="range" min="40" max="220" value="110"></label>
+    <button id="reset">Reset motion</button>
+  </div>
+  <script>
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+    const ui = document.getElementById("ui");
+    const THEMES = {
+      night: { bg:[7,7,12], dots:[[201,182,255],[110,231,197],[255,211,107]] },
+      ember: { bg:[18,8,6], dots:[[255,120,70],[255,200,120],[255,80,60]] },
+      sea: { bg:[4,12,18], dots:[[80,200,220],[90,140,255],[180,230,255]] }
+    };
+    const store = {
+      get() {
+        try { return JSON.parse(localStorage.getItem("wall-prefs") || "{}"); }
+        catch { return {}; }
+      },
+      set(v) { localStorage.setItem("wall-prefs", JSON.stringify(v)); }
+    };
+    let prefs = Object.assign({ theme:"night", count:110 }, store.get());
+    document.getElementById("theme").value = prefs.theme;
+    document.getElementById("count").value = prefs.count;
+    let W = 0, H = 0, dpr = 1, parts = [], mx = 0, my = 0, hideT;
+    function resize(){
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.width = Math.floor(innerWidth * dpr);
+      H = canvas.height = Math.floor(innerHeight * dpr);
+      canvas.style.width = innerWidth + "px";
+      canvas.style.height = innerHeight + "px";
+      seed();
+    }
+    function seed(){
+      parts = [];
+      const n = +prefs.count;
+      for (let i=0;i<n;i++){
+        parts.push({
+          x: Math.random()*W, y: Math.random()*H,
+          vx: (Math.random()-.5)*0.4, vy: (Math.random()-.5)*0.4,
+          r: (0.6 + Math.random()*2.2) * dpr,
+          c: Math.floor(Math.random()*3)
+        });
+      }
+    }
+    function showUi(){
+      ui.classList.remove("hide");
+      clearTimeout(hideT);
+      hideT = setTimeout(() => ui.classList.add("hide"), 3500);
+    }
+    function pointer(x,y){ mx = x * dpr; my = y * dpr; showUi(); }
+    canvas.addEventListener("pointerdown", (e) => pointer(e.clientX, e.clientY));
+    canvas.addEventListener("pointermove", (e) => pointer(e.clientX, e.clientY));
+    window.addEventListener("deviceorientation", (e) => {
+      if (e.gamma == null) return;
+      mx = (W/2) + (e.gamma/45)*W*0.35;
+      my = (H/2) + ((e.beta||0)/45)*H*0.2;
+    });
+    document.getElementById("theme").onchange = (e) => { prefs.theme = e.target.value; store.set(prefs); };
+    document.getElementById("count").oninput = (e) => { prefs.count = +e.target.value; store.set(prefs); seed(); };
+    document.getElementById("reset").onclick = () => { mx = W/2; my = H/2; seed(); };
+    function tick(){
+      const th = THEMES[prefs.theme] || THEMES.night;
+      ctx.fillStyle = `rgba(${th.bg[0]},${th.bg[1]},${th.bg[2]},0.18)`;
+      ctx.fillRect(0,0,W,H);
+      for (const p of parts){
+        const dx = mx - p.x, dy = my - p.y;
+        const d2 = dx*dx + dy*dy + 80;
+        p.vx += dx / d2 * 18;
+        p.vy += dy / d2 * 18;
+        p.vx *= 0.96; p.vy *= 0.96;
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0) p.x += W; if (p.x > W) p.x -= W;
+        if (p.y < 0) p.y += H; if (p.y > H) p.y -= H;
+        const col = th.dots[p.c];
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},0.85)`;
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+      requestAnimationFrame(tick);
+    }
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+    addEventListener("resize", resize);
+    resize();
+    mx = W/2; my = H/2;
+    showUi();
+    tick();
+  </script>
+</body>
+</html>
